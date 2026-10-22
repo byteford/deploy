@@ -73,6 +73,7 @@ type PlanResult struct {
 type Runner struct {
 	execPath string
 	resolver *manifest.Resolver // nil = single-repo mode, filepath.Join(repoRoot, dir)
+	backend  BackendConfig      // zero = don't pass any -backend-config at init; see Init
 }
 
 func NewRunner() (*Runner, error) {
@@ -126,16 +127,33 @@ func (r *Runner) IsInitialized(repoRoot, dir string) bool {
 	return err == nil && info.IsDir()
 }
 
-// Init runs `terraform init -upgrade` in dir.
+// SetBackend gives the Runner the [backend] settings loaded from the env
+// files, so Init can pass them to directories that were already migrated
+// (see backendInitOptions). Without this a fresh checkout has no memory of
+// the bucket/key — only a previous init's local .terraform/ did.
+func (r *Runner) SetBackend(b BackendConfig) {
+	r.backend = b
+}
+
+// Init runs `terraform init -upgrade` in dir. For a directory that has
+// the generated backend stub (deploy_backend.tf) and a [backend] section
+// is configured, the resolved settings are passed via -backend-config, so
+// init works on a machine that has never seen this directory before
+// (CI runners, a new workstation).
 func (r *Runner) Init(ctx context.Context, repoRoot, dir string) error {
 	tf, err := r.newClient(repoRoot, dir)
+	if err != nil {
+		return err
+	}
+	backendOpts, err := r.backendInitOptions(repoRoot, dir)
 	if err != nil {
 		return err
 	}
 	var buf bytes.Buffer
 	tf.SetStdout(&buf)
 	tf.SetStderr(&buf)
-	if err := tf.Init(ctx, tfexec.Upgrade(true)); err != nil {
+	opts := append([]tfexec.InitOption{tfexec.Upgrade(true)}, backendOpts...)
+	if err := tf.Init(ctx, opts...); err != nil {
 		return fmt.Errorf("%w\n%s", err, buf.String())
 	}
 	return nil

@@ -166,3 +166,66 @@ func TestMigrateBackend_RejectsMissingDirPlaceholder(t *testing.T) {
 		t.Errorf("error should mention the {dir} placeholder, got: %v", err)
 	}
 }
+
+func TestBackendInitOptions_NoneWithoutStubOrConfig(t *testing.T) {
+	root := t.TempDir()
+	dir := "services/a"
+	if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := BackendConfig{Type: "s3", Settings: map[string]string{"key": "{dir}.tfstate"}}
+
+	// Configured, but the directory has not been migrated: no options.
+	r := &Runner{backend: cfg}
+	opts, err := r.backendInitOptions(root, dir)
+	if err != nil || len(opts) != 0 {
+		t.Fatalf("no stub: got %d opts, err %v; want 0, nil", len(opts), err)
+	}
+
+	// Migrated, but no [backend] configured: no options.
+	if err := WriteBackendStub(filepath.Join(root, dir), "s3"); err != nil {
+		t.Fatal(err)
+	}
+	r = &Runner{}
+	opts, err = r.backendInitOptions(root, dir)
+	if err != nil || len(opts) != 0 {
+		t.Fatalf("no config: got %d opts, err %v; want 0, nil", len(opts), err)
+	}
+}
+
+func TestBackendInitOptions_OnePerSettingWhenMigrated(t *testing.T) {
+	root := t.TempDir()
+	dir := "services/a"
+	if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBackendStub(filepath.Join(root, dir), "s3"); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{backend: BackendConfig{Type: "s3", Settings: map[string]string{
+		"bucket": "b",
+		"key":    "{dir}.tfstate",
+	}}}
+	opts, err := r.backendInitOptions(root, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts) != 2 {
+		t.Fatalf("got %d opts, want 2", len(opts))
+	}
+}
+
+func TestBackendInitOptions_ErrorsWithoutDirPlaceholder(t *testing.T) {
+	root := t.TempDir()
+	dir := "services/a"
+	if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBackendStub(filepath.Join(root, dir), "s3"); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{backend: BackendConfig{Type: "s3", Settings: map[string]string{"key": "fixed.tfstate"}}}
+	if _, err := r.backendInitOptions(root, dir); err == nil {
+		t.Fatal("expected an error when no setting contains {dir}")
+	}
+}
