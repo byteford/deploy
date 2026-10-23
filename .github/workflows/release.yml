@@ -1,0 +1,88 @@
+name: release
+
+# Publishes a compiled homelab-deploy so pipelines can download it instead of
+# building it. Push a tag like v0.1.0 on a main commit whose CI is green.
+#
+# - On a v* tag: builds, checks that CI passed for that exact commit, and
+#   creates a GitHub release with the tarball and SHA256SUMS.
+# - On a PR touching this file: builds and verifies only. Nothing is published.
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # contents: write is only exercised by the tag-only publish step;
+    # actions: read lets the CI-gate step list workflow runs.
+    permissions:
+      contents: write
+      actions: read
+    env:
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'pr-test' }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # no build cache: release binaries come from a clean build
+
+      - name: Require green CI on this commit (tags only)
+        if: env.IS_TAG == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ok="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length')"
+          if [ "$ok" -lt 1 ]; then
+            echo "No successful CI run found for $GITHUB_SHA. Tag a commit whose CI is green." >&2
+            exit 1
+          fi
+          echo "CI is green for $GITHUB_SHA"
+
+      - name: Build linux/amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o dist/homelab-deploy .
+          asset="homelab-deploy_${VERSION}_linux_amd64.tar.gz"
+          tar -C dist -czf "$asset" homelab-deploy
+          sha256sum "$asset" > SHA256SUMS
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          cat SHA256SUMS
+
+      - name: Verify the artifact
+        run: |
+          set -euo pipefail
+          sha256sum -c SHA256SUMS
+          mkdir -p verify
+          tar -C verify -xzf "$ASSET"
+          file verify/homelab-deploy || true
+          # --help prints usage and exits 0 without needing terraform.
+          ./verify/homelab-deploy --help > /dev/null 2>&1
+
+      - name: Publish release (tags only)
+        if: env.IS_TAG == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "$ASSET" SHA256SUMS
