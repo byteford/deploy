@@ -152,6 +152,27 @@ func (r *Runner) MigrateBackend(ctx context.Context, repoRoot, dir string, backe
 	return nil
 }
 
+// backendInitOptions returns the -backend-config options Init should pass
+// for dir, or nil when none apply: no [backend] configured, or dir has not
+// been migrated (no backend stub), in which case it still uses whatever
+// backend its own .tf files declare. A configured [backend] without the
+// {dir} placeholder is an error, for the same collision reason as
+// MigrateBackend.
+func (r *Runner) backendInitOptions(repoRoot, dir string) ([]tfexec.InitOption, error) {
+	if r.backend.IsZero() || !HasBackendStub(r.resolveWorkDir(repoRoot, dir)) {
+		return nil, nil
+	}
+	if !HasDirPlaceholder(r.backend.Settings) {
+		return nil, fmt.Errorf(`[backend] settings must include "%s" in whichever setting represents the state's location — without it, every directory would resolve to the same location and collide`, dirPlaceholder)
+	}
+	resolved := ResolveSettings(r.backend.Settings, dir)
+	opts := make([]tfexec.InitOption, 0, len(resolved))
+	for _, k := range sortedSettingKeys(resolved) {
+		opts = append(opts, tfexec.BackendConfig(fmt.Sprintf("%s=%s", k, resolved[k])))
+	}
+	return opts, nil
+}
+
 func sortedSettingKeys(settings map[string]string) []string {
 	keys := make([]string, 0, len(settings))
 	for k := range settings {

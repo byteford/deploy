@@ -442,3 +442,24 @@ func TestClassifyDirArg_TypoedCommandGetsUsageText(t *testing.T) {
 		t.Errorf("expected the usage text to follow, got %v", got)
 	}
 }
+
+func TestParseFlags_NonInteractive(t *testing.T) {
+	gf, remaining, err := parseFlags([]string{"--non-interactive", "apply"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gf.nonInteractive {
+		t.Error("--non-interactive should set nonInteractive")
+	}
+	if len(remaining) != 1 || remaining[0] != "apply" {
+		t.Errorf("remaining = %v, want [apply]", remaining)
+	}
+
+	gf, _, err = parseFlags([]string{"plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gf.nonInteractive {
+		t.Error("nonInteractive should default to false")
+	}
+}

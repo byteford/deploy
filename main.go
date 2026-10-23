@@ -50,6 +50,7 @@ type globalFlags struct {
 	verbose        bool
 	timeout        time.Duration
 	migrateBackend bool
+	nonInteractive bool
 }
 
 func parseFlags(args []string) (globalFlags, []string, error) {
@@ -67,6 +68,8 @@ func parseFlags(args []string) (globalFlags, []string, error) {
 	fs.DurationVar(&gf.timeout, "timeout", 0, "maximum time a plan/apply/init run may take, e.g. 10m (0 = no timeout); not used by serve, which runs indefinitely by design")
 	fs.BoolVar(&gf.migrateBackend, "migrate-backend", false, "with init: migrate to the [backend] configured in the shared/secrets env file, after an explicit confirmation")
 
+	fs.BoolVar(&gf.nonInteractive, "non-interactive", false, "never prompt (for CI): apply refuses to continue past an unsatisfied .manual-before and skips directories whose backend cannot save a plan, instead of waiting on stdin")
+
 	if err := fs.Parse(args); err != nil {
 		return globalFlags{}, nil, err
 	}
@@ -82,6 +85,7 @@ commands:
   init                          terraform init every directory
   sync                          clone/update every git-managed repo in .deploy-repos (multi-repo mode)
   init --migrate-backend        migrate every not-yet-migrated directory to the configured [backend]
+  <dir> init                    terraform init just one directory
   <dir> init --migrate-backend  migrate just one directory
   graph [text|dot]              print the dependency graph
   open                          open the last plan's HTML report in a browser
@@ -161,6 +165,7 @@ func run(args []string) error {
 		return fmt.Errorf("loading %s: %w", envPath, err)
 	}
 	backend.Merge(secretBackend)
+	cliBackend = backend
 	if !found {
 		w := bufio.NewWriter(os.Stderr)
 		tf.WarnMissingEnv(w, envPath)
@@ -198,7 +203,7 @@ func run(args []string) error {
 	case "sync":
 		return cmdSync(ctx, repoRoot)
 	case "plan", "apply":
-		return cmdFullRun(ctx, resolver, repoRoot, remaining[0], gf.verbose)
+		return cmdFullRun(ctx, resolver, repoRoot, remaining[0], gf.verbose, gf.nonInteractive)
 	case "graph":
 		format := "text"
 		if len(remaining) > 1 {
@@ -228,7 +233,7 @@ func run(args []string) error {
 			}
 			return cmdMigrateBackendOne(ctx, resolver, repoRoot, remaining[0], backend)
 		}
-		return cmdSingleDir(ctx, resolver, repoRoot, remaining[0], cmd, gf.verbose)
+		return cmdSingleDir(ctx, resolver, repoRoot, remaining[0], cmd, gf.verbose, gf.nonInteractive)
 	}
 }
 
@@ -243,8 +248,17 @@ func newRunner(resolver *manifest.Resolver) (*tf.Runner, error) {
 		return nil, err
 	}
 	runner.SetResolver(resolver)
+	runner.SetBackend(cliBackend)
 	return runner, nil
 }
+
+// cliBackend is the merged [backend] section from the env files, set once
+// by run() before any command constructs a Runner. Runners use it so that
+// `init` can pass -backend-config to already-migrated directories (see
+// tf.Runner.Init). Zero value (the default, and what tests see) means
+// "pass nothing", which is the previous behavior. The web server builds
+// its own Runner and does not use this.
+var cliBackend tf.BackendConfig
 
 // cmdSync clones any not-yet-checked-out git entry in .deploy-repos and
 // fast-forward-updates any that's already checked out — see
@@ -343,10 +357,15 @@ func confirmUnsavedPlanCLI(stdin *bufio.Reader) tf.UnsavedPlanConfirm {
 	}
 }
 
-func cmdSingleDir(ctx context.Context, resolver *manifest.Resolver, repoRoot, dir, cmd string, verbose bool) error {
+func cmdSingleDir(ctx context.Context, resolver *manifest.Resolver, repoRoot, dir, cmd string, verbose, nonInteractive bool) error {
 	runner, err := newRunner(resolver)
 	if err != nil {
 		return err
+	}
+
+	if cmd == "init" {
+		fmt.Printf("==> terraform init in %s\n", dir)
+		return runner.Init(ctx, repoRoot, dir)
 	}
 
 	if cmd == "apply" {
@@ -354,7 +373,17 @@ func cmdSingleDir(ctx context.Context, resolver *manifest.Resolver, repoRoot, di
 		if err != nil {
 			return err
 		}
-		graph.PromptIfNeeded(ms, bufio.NewReader(os.Stdin))
+		if nonInteractive {
+			// Same rule the web server uses: proceed only if there is
+			// no manual step or its .manual-check already passes. Never
+			// read stdin — in CI it is closed, and PromptIfNeeded would
+			// return at once and silently step past the manual step.
+			if !orchestrate.DefaultManualStepHandler(dir, ms) {
+				return fmt.Errorf("%s needs a manual step that is not satisfied (see .manual-before); refusing to continue with --non-interactive", dir)
+			}
+		} else {
+			graph.PromptIfNeeded(ms, bufio.NewReader(os.Stdin))
+		}
 	}
 
 	if !runner.IsInitialized(repoRoot, dir) {
@@ -373,7 +402,11 @@ func cmdSingleDir(ctx context.Context, resolver *manifest.Resolver, repoRoot, di
 	}
 
 	if cmd == "apply" {
-		confirm := confirmUnsavedPlanCLI(bufio.NewReader(os.Stdin))
+		// A nil confirm means "skip": the safe answer when nobody can be asked.
+		var confirm tf.UnsavedPlanConfirm
+		if !nonInteractive {
+			confirm = confirmUnsavedPlanCLI(bufio.NewReader(os.Stdin))
+		}
 		if live != nil {
 			return runner.Apply(ctx, repoRoot, dir, planFile, confirm, live)
 		}
@@ -394,7 +427,7 @@ func cmdSingleDir(ctx context.Context, resolver *manifest.Resolver, repoRoot, di
 	return res.Err
 }
 
-func cmdFullRun(ctx context.Context, resolver *manifest.Resolver, repoRoot, cmd string, verbose bool) error {
+func cmdFullRun(ctx context.Context, resolver *manifest.Resolver, repoRoot, cmd string, verbose, nonInteractive bool) error {
 	if cmd == "plan" {
 		// Wipe old logs/reports/plan-files so this run starts clean.
 		// Deliberately NOT done for "apply": a prior "plan" run's saved
@@ -445,6 +478,13 @@ func cmdFullRun(ctx context.Context, resolver *manifest.Resolver, repoRoot, cmd 
 			},
 			HandleUnsavedPlanApply: confirmUnsavedPlanCLI(stdin),
 			Resolver:               resolver,
+		}
+		if nonInteractive {
+			// nil handlers fall back to orchestrate's defaults: stop at an
+			// unsatisfied manual step, skip a directory that needs a live
+			// confirmation. Neither ever reads stdin.
+			hooks.HandleManualStep = nil
+			hooks.HandleUnsavedPlanApply = nil
 		}
 		entries, applyErr := orchestrate.ApplySequential(ctx, runner, repoRoot, g.Order, hooks)
 		rep.Entries = entries

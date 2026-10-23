@@ -564,6 +564,41 @@ fetched and built for real.
   detection, `.manual-check`/`.manual-before` handling, the WSL-aware
   `open` command, `graph`/`graph dot` — is a direct port.
 
+## Running in CI (non-interactive)
+
+- `--non-interactive` never reads stdin. `apply` stops at a directory whose
+  `.manual-before` is not satisfied by its `.manual-check` (and skips a
+  directory whose backend cannot save a plan) instead of waiting for Enter.
+  Without this flag a CLI `apply` with closed stdin would step straight past a
+  manual step. `plan` never prompts.
+- `<dir> init` initialises a single directory, so a CI job can init only the
+  stacks it is about to plan.
+- On a directory that already has `deploy_backend.tf`, every `init` now passes
+  the `[backend]` settings (`-backend-config`, with `{dir}` resolved), so a
+  fresh checkout can init without a previous `.terraform/`. A directory without
+  the stub is unchanged. `serve` builds its own runner and does not do this.
+- Cloudflare R2 example for `[backend]` (needs Terraform >= 1.10 for
+  `use_lockfile`; R2 has no DynamoDB):
+
+```
+[backend]
+type=s3
+bucket=<bucket>
+key=homelab_v2/{dir}/terraform.tfstate
+region=auto
+use_lockfile=true
+use_path_style=true
+skip_credentials_validation=true
+skip_metadata_api_check=true
+skip_region_validation=true
+skip_requesting_account_id=true
+skip_s3_checksum=true
+endpoints={ s3 = "https://<account id>.r2.cloudflarestorage.com" }
+```
+
+  Credentials stay out of git: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in
+  `.env`'s `[env]` section or the CI environment.
+
 ## Web dashboard
 
 ```
