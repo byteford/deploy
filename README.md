@@ -966,3 +966,7 @@ A few concrete next steps that this structure makes easy:
   already a self-contained function — call it from a cron-triggered binary
   or a Nomad periodic job and alert on `StatusChanges`/`StatusError` via
   the JSON report.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
