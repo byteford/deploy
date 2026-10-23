@@ -909,19 +909,14 @@ clean Go build with the version in `go.mod`), then attaches
 `homelab-deploy_<tag>_linux_amd64.tar.gz` and `SHA256SUMS` to the release.
 Other platforms are not built; add them to the build step if needed.
 
-**Consume it in a pipeline** (private repo, so a token that can read
-`byteford/deploy` contents is required; keep it in a CI secret, never in the
-repo). Pin the tag, verify the checksum, never use "latest":
+**Consume it in a pipeline** (the repo and its releases are public, so no
+token is needed). Pin the tag, verify the checksum, never use "latest":
 
 ```
 TAG=v0.1.0
-API=https://api.github.com/repos/byteford/deploy
-A="Authorization: Bearer $DEPLOY_REPO_TOKEN"
-rel="$(curl -fsS -H "$A" "$API/releases/tags/$TAG")"
-for name in "homelab-deploy_${TAG}_linux_amd64.tar.gz" SHA256SUMS; do
-  id="$(echo "$rel" | jq -r --arg n "$name" '.assets[] | select(.name==$n) | .id')"
-  curl -fsSL -H "$A" -H "Accept: application/octet-stream" -o "$name" "$API/releases/assets/$id"
-done
+BASE="https://github.com/byteford/deploy/releases/download/$TAG"
+curl -fsSLO "$BASE/homelab-deploy_${TAG}_linux_amd64.tar.gz"
+curl -fsSLO "$BASE/SHA256SUMS"
 sha256sum -c SHA256SUMS
 tar -xzf "homelab-deploy_${TAG}_linux_amd64.tar.gz" homelab-deploy
 ```
