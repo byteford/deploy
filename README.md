@@ -856,6 +856,45 @@ instead, this one was just new and got missed. Fixed by using the
 existing correct `waitForJob` helper, then confirmed genuinely fixed
 (not just coincidentally passing) across 8 repeated isolated runs.
 
+## Releases
+
+`.github/workflows/release.yml` publishes a compiled binary so pipelines can
+download it instead of building it.
+
+**Cut a release** (after the commit's CI is green on `main`):
+
+```
+git tag v0.1.0 <commit>
+git push origin v0.1.0
+```
+
+The workflow refuses to publish if `ci.yml` has no successful run for the
+tagged commit. It builds `linux/amd64` (`CGO_ENABLED=0`, `-trimpath`, from a
+clean Go build with the version in `go.mod`), then attaches
+`homelab-deploy_<tag>_linux_amd64.tar.gz` and `SHA256SUMS` to the release.
+Other platforms are not built; add them to the build step if needed.
+
+**Consume it in a pipeline** (private repo, so a token that can read
+`byteford/deploy` contents is required; keep it in a CI secret, never in the
+repo). Pin the tag, verify the checksum, never use "latest":
+
+```
+TAG=v0.1.0
+API=https://api.github.com/repos/byteford/deploy
+A="Authorization: Bearer $DEPLOY_REPO_TOKEN"
+rel="$(curl -fsS -H "$A" "$API/releases/tags/$TAG")"
+for name in "homelab-deploy_${TAG}_linux_amd64.tar.gz" SHA256SUMS; do
+  id="$(echo "$rel" | jq -r --arg n "$name" '.assets[] | select(.name==$n) | .id')"
+  curl -fsSL -H "$A" -H "Accept: application/octet-stream" -o "$name" "$API/releases/assets/$id"
+done
+sha256sum -c SHA256SUMS
+tar -xzf "homelab-deploy_${TAG}_linux_amd64.tar.gz" homelab-deploy
+```
+
+Note the checksum file is published next to the binary, so it detects a
+corrupted download, not a compromised release. Rely on pinning the tag and on
+restricting who can push tags and write to releases for that.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push/PR to `main`: build, `go
