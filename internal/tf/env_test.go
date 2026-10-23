@@ -68,18 +68,18 @@ func TestLoadEnvFile_JSONShapedValueUntouched(t *testing.T) {
 func TestLoadEnvFile_DoubleQuotedValueIsUnwrapped(t *testing.T) {
 	// Reproduces the real failure: a value carried over from env.sh
 	// habits, quoted for the shell's benefit, e.g.
-	//   nomad_addr="http://192.168.2.6:4646"
+	//   nomad_addr="http://192.0.2.10:4646"
 	// must NOT end up as TF_VAR_nomad_addr containing literal quote
 	// characters — that's exactly what broke the nomad/vault/authentik
 	// provider configuration (url.Parse choking on a leading `"`).
 	defer clearEnv(t, "TF_VAR_nomad_addr")
-	root := writeEnvFile(t, `nomad_addr="http://192.168.2.6:4646"`+"\n")
+	root := writeEnvFile(t, `nomad_addr="http://192.0.2.10:4646"`+"\n")
 
 	if _, _, err := LoadEnvFile(root); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("TF_VAR_nomad_addr"); got != "http://192.168.2.6:4646" {
-		t.Errorf("TF_VAR_nomad_addr = %q, want http://192.168.2.6:4646 (no literal quotes)", got)
+	if got := os.Getenv("TF_VAR_nomad_addr"); got != "http://192.0.2.10:4646" {
+		t.Errorf("TF_VAR_nomad_addr = %q, want http://192.0.2.10:4646 (no literal quotes)", got)
 	}
 }
 

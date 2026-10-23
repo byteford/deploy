@@ -1,0 +1,19 @@
+# Secrets and local config (see .env.example)
+.env
+.env.*
+!.env.example
+!.env.shared.example
+
+# Terraform artifacts a run leaves behind
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# homelab-deploy output
+.deploy-logs/
+.deploy-repos-checkouts/
+
+# Local builds
+/homelab-deploy
+/dist/
